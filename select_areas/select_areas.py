@@ -30,6 +30,7 @@ from qgis.core import (QgsMapLayerProxyModel, QgsMessageLog, Qgis, QgsRectangle,
                        QgsField, QgsFeature, QgsProject, QgsWkbTypes,)
 from qgis.PyQt.QtCore import QVariant
 import processing
+import math
 
 
 # Initialize Qt resources from file resources.py
@@ -196,7 +197,9 @@ class SelectAreas:
             self.dlg = SelectAreasDialog()
             self.dlg.lineEdit.insert("100")
             self.dlg.lineEdit_2.insert("1000")
+            self.dlg.lineEdit_3.insert("output")
             self.dlg.mQgsFileWidget.setStorageMode(QgsFileWidget.StorageMode.GetDirectory)
+            self.dlg.radioButton.setChecked(True)
 
         self.dlg.mMapLayerComboBox.setFilters(QgsMapLayerProxyModel.RasterLayer)
         self.dlg.mMapLayerComboBox.setShowCrs(True)
@@ -236,6 +239,9 @@ class SelectAreas:
             edge = float(self.dlg.lineEdit.text())
             n = int(self.dlg.lineEdit_2.text())
             output = self.dlg.mQgsFileWidget.lineEdit().text()
+            basename = self.dlg.lineEdit_3.text()
+            leng = int(math.log10(n))
+            interesection = self.dlg.radioButton.isChecked()
 
             # Do some checks
 
@@ -258,6 +264,7 @@ class SelectAreas:
                       'PROJWIN': "",
                       'OUTPUT': "",
                       'OPTIONS': "TILED=YES|COMPRESSION=deflate"}
+            list_tifs = []
             for i in range(n):
                 count = 0
                 while(count < max_attempts):
@@ -267,7 +274,10 @@ class SelectAreas:
                     y = random.randrange(minY, maxY)
                     rect = QgsRectangle(x, y, x + edge, y+edge)
                     pRect = QgsGeometry.fromRect(rect)
-                    flag = pRect.intersects(mPoly)
+                    if interesection:
+                        flag = pRect.intersects(mPoly)
+                    else:
+                        flag = pRect.within(mPoly)
 
                     fet = QgsFeature()
                     fet.setGeometry(pRect)
@@ -276,7 +286,9 @@ class SelectAreas:
                     if flag:
                         pr.addFeatures([fet])
                         params['PROJWIN'] = f"{x}, {x + edge}, {y}, {y+edge}"
-                        params['OUTPUT'] = f"{output}/output{i}.tif"
+                        outfile = f"{output}/{basename}{i:0{leng}}.tif"
+                        params['OUTPUT'] = outfile
+                        list_tifs.append(outfile)
                         processing.run("gdal:cliprasterbyextent", params)
 
                         break
