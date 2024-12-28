@@ -31,6 +31,7 @@ from qgis.core import (QgsMapLayerProxyModel, QgsMessageLog, Qgis, QgsRectangle,
 from qgis.PyQt.QtCore import QVariant
 import processing
 import math
+from pathlib import Path
 
 
 # Initialize Qt resources from file resources.py
@@ -258,14 +259,18 @@ class SelectAreas:
             pr.addAttributes([QgsField("good", QVariant.Bool)])
             vl.updateFields()
             # how many attempts to get a box in the limits
-            max_attempts = 10000
+            max_attempts = 100000
             # Fixed output parameters
             params = {'INPUT': layer.name(),
                       'PROJWIN': "",
                       'OUTPUT': "",
-                      'OPTIONS': "TILED=YES|COMPRESSION=deflate"}
+                      'OPTIONS': "TILED=YES|COMPRESS=LZW"}
             list_tifs = []
             for i in range(n):
+                outfile = f"{output}/{basename}{i:0{leng}}.tif"
+                o_file = Path(outfile)
+                if o_file.is_file():
+                    continue
                 count = 0
                 while(count < max_attempts):
                     # generate a random square
