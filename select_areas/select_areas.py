@@ -27,7 +27,8 @@ from qgis.PyQt.QtWidgets import QAction
 from qgis.gui import (QgsFileWidget
                       )
 from qgis.core import (QgsMapLayerProxyModel, QgsMessageLog, Qgis, QgsRectangle, QgsGeometry, QgsVectorLayer,
-                       QgsField, QgsFeature, QgsProject, QgsWkbTypes,)
+                       QgsField, QgsFeature, QgsProject, QgsWkbTypes, QgsTask, QgsApplication,
+                       QgsProcessingFeedback,)
 from qgis.PyQt.QtCore import QVariant
 import processing
 import math
@@ -241,65 +242,131 @@ class SelectAreas:
             n = int(self.dlg.lineEdit_2.text())
             output = self.dlg.mQgsFileWidget.lineEdit().text()
             basename = self.dlg.lineEdit_3.text()
-            leng = int(math.log10(n))
             interesection = self.dlg.radioButton.isChecked()
+            overlap = self.dlg.radioButton_3.isChecked()
+            overwrite = self.dlg.radioButton_4.isChecked()
 
             # Do some checks
 
-            # Do something useful here - delete the line containing pass and
+            params = {
+                "mPoly": mPoly,
+                "extent": extent,
+                "name": layer.name(),
+                "edge": edge,
+                "output": output,
+                "basename": basename,
+                "n": n,
+                "interesection": interesection,
+                "overlap": overlap,
+                "overwrite": overwrite,
+            }
+            task = QgsTask.fromFunction('selection', self.runner, params=params, on_finished=self.finish)
+            QgsApplication.taskManager().addTask(task)
 
-            minX = int(extent.xMinimum())
-            maxX = int(extent.xMaximum())
-            minY = int(extent.yMinimum())
-            maxY = int(extent.yMaximum())
-            QgsMessageLog.logMessage(f"{minX}, {minY}, {maxX}, {maxY}", 'Selector',
-                                     level=Qgis.Info)
-            vl = QgsVectorLayer("Polygon?crs=epsg:27700", "selectionAreas", "memory")
-            pr = vl.dataProvider()
-            pr.addAttributes([QgsField("good", QVariant.Bool)])
-            vl.updateFields()
-            # how many attempts to get a box in the limits
-            max_attempts = 100000
-            # Fixed output parameters
-            params = {'INPUT': layer.name(),
-                      'PROJWIN': "",
-                      'OUTPUT': "",
-                      'OPTIONS': "TILED=YES|COMPRESS=LZW"}
-            list_tifs = []
-            for i in range(n):
-                outfile = f"{output}/{basename}{i:0{leng}}.tif"
-                o_file = Path(outfile)
-                if o_file.is_file():
-                    continue
-                count = 0
-                while(count < max_attempts):
-                    # generate a random square
-                    count += 1
-                    x = random.randrange(minX, maxX)
-                    y = random.randrange(minY, maxY)
-                    rect = QgsRectangle(x, y, x + edge, y+edge)
-                    pRect = QgsGeometry.fromRect(rect)
-                    if interesection:
-                        flag = pRect.intersects(mPoly)
-                    else:
-                        flag = pRect.within(mPoly)
+    def stopped(self, task):
+        QgsMessageLog.logMessage('Task "{name}" was canceled'.format(name=task.description()), 'Selector', Qgis.Info)
 
-                    fet = QgsFeature()
-                    fet.setGeometry(pRect)
-                    fet.setAttributes([flag])
-
-                    if flag:
-                        pr.addFeatures([fet])
-                        params['PROJWIN'] = f"{x}, {x + edge}, {y}, {y+edge}"
-                        outfile = f"{output}/{basename}{i:0{leng}}.tif"
-                        params['OUTPUT'] = outfile
-                        list_tifs.append(outfile)
-                        processing.run("gdal:cliprasterbyextent", params)
-
-                        break
-                if count == max_attempts:
-                    QgsMessageLog.logMessage("Unable to place rectangle, consider increasing MAX_ATTEMPTS",
-                                             'Selector', Qgis.Warning)
-
-            vl.updateExtents()
+    def finish(self, exception, result=None):
+        if exception is None:
+            QgsMessageLog.logMessage('Selection task has completed', 'Selector', Qgis.Info)
+            vl = result['vl']
             QgsProject.instance().addMapLayer(vl)
+        else:
+            QgsMessageLog.logMessage(f'Selection has failed with\n{exception}', 'Selector', Qgis.Warning)
+
+    def runner(self, task, params):
+        overlap = params['overlap']
+        extent = params['extent']
+        interesection = params['interesection']
+        mPoly = params['mPoly']
+        name = params['name']
+        n = params['n']
+        output = params['output']
+        edge = params['edge']
+        basename = params['basename']
+        overwrite = params['overwrite']
+
+        minX = int(extent.xMinimum())
+        maxX = int(extent.xMaximum())
+        minY = int(extent.yMinimum())
+        maxY = int(extent.yMaximum())
+        leng = int(math.log10(n))
+        QgsMessageLog.logMessage(f"{minX}, {minY}, {maxX}, {maxY}", 'Selector',
+                                 level=Qgis.Info)
+        vl = QgsVectorLayer("Polygon?crs=epsg:27700", "selectionAreas", "memory")
+        pr = vl.dataProvider()
+        pr.addAttributes([QgsField("good", QVariant.Bool)])
+        vl.updateFields()
+        # how many attempts to get a box in the limits
+        max_attempts = 100000
+        # Fixed output parameters
+        params = {'INPUT': name,
+                  'PROJWIN': "",
+                  'OUTPUT': "",
+                  'OPTIONS': "TILED=YES|COMPRESS=LZW"}
+        list_tifs = []
+        for i in range(n):
+            outfile = f"{output}/{basename}{i:0{leng}}.tif"
+            o_file = Path(outfile)
+            task.setProgress(1 + 100.0*i/float(n))
+            if not overwrite and o_file.is_file():
+                continue
+            count = 0
+            while(count < max_attempts):
+                if task.isCanceled():
+                    self.stopped(task)
+                    return None
+                # generate a random square
+                count += 1
+                x = random.randrange(minX, maxX)
+                y = random.randrange(minY, maxY)
+                rect = QgsRectangle(x, y, x + edge, y+edge)
+                pRect = QgsGeometry.fromRect(rect)
+                if interesection:
+                    flag = pRect.intersects(mPoly)
+                else:
+                    flag = pRect.within(mPoly)
+
+                fet = QgsFeature()
+                fet.setGeometry(pRect)
+                fet.setAttributes([flag])
+
+                if flag and not overlap:
+                    # check for other squares
+                    for feat in vl.getFeatures():
+                        geom = feat.geometry()
+                        if geom.intersects(pRect):
+                            flag = False
+                            break
+                if flag:
+                    pr.addFeatures([fet])
+                    vl.commitChanges()
+                    params['PROJWIN'] = f"{x}, {x + edge}, {y}, {y+edge}"
+                    outfile = f"{output}/{basename}{i:0{leng}}.tif"
+                    params['OUTPUT'] = outfile
+                    list_tifs.append(outfile)
+                    processing.run("gdal:cliprasterbyextent", params, feedback=MyFeedBack())
+
+                    break
+        return {'vl': vl}
+
+
+class MyFeedBack(QgsProcessingFeedback):
+
+    def setProgressText(self, text):
+        pass
+
+    def pushInfo(self, info):
+        pass
+
+    def pushCommandInfo(self, info):
+        pass
+
+    def pushDebugInfo(self, info):
+        pass
+
+    def pushConsoleInfo(self, info):
+        pass
+
+    def reportError(self, error, fatalError=False):
+        pass
